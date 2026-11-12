@@ -1,0 +1,4 @@
+# No Windows, embute o runtime do C no binário. O módulo VST roda dentro do
+# serviço de áudio do Windows, que pode não ter o "Visual C++ Redistributable".
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

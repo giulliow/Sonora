@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["crates/sonora-dsp", "crates/sonora-vst", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/giulliow/sonora"

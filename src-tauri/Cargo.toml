@@ -1,0 +1,25 @@
+[package]
+name = "sonora"
+description = "Sonora: deixa qualquer microfone com som de qualidade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "sonora_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cpal = "0.15"
+rtrb = "0.3"
+sonora-dsp = { path = "../crates/sonora-dsp" }
+tauri-plugin-opener = "2"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
