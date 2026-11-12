@@ -1,6 +1,13 @@
 import { useState } from "react";
-import { api, errorText, type CalibrationStep, type MicType, type Recommendation, type StepResult } from "../api";
-import { formatDb, READ_PHRASE, warningText } from "../texts";
+import {
+  api,
+  errorText,
+  type CalibrationOutcome,
+  type CalibrationStep,
+  type MicType,
+  type StepResult,
+} from "../api";
+import { formatDb, formatSigned, LEVELS, READ_PHRASE, warningText } from "../texts";
 import { useCountdown } from "../useCountdown";
 import { usePlayback } from "../usePlayback";
 import { Help } from "./Help";
@@ -8,8 +15,8 @@ import { Help } from "./Help";
 interface Props {
   ready: boolean;
   micType: MicType | null;
-  recommendation: Recommendation | null;
-  onRecommendation: (r: Recommendation | null) => void;
+  windowsActive: boolean;
+  onUse: (outcome: CalibrationOutcome) => void;
   onError: (msg: string) => void;
 }
 
@@ -37,7 +44,9 @@ const STEPS: { id: CalibrationStep; secs: number; title: string; instruction: st
 function stepSummary(r: StepResult): string {
   switch (r.step) {
     case "silence":
-      return `Ruído de fundo: ${formatDb(r.noise_floor_dbfs, "dBFS")}`;
+      return r.noise_floor_dbfs <= -90
+        ? "Silêncio total: seu microfone já corta o ruído sozinho nas pausas."
+        : `Ruído de fundo: ${formatDb(r.noise_floor_dbfs, "dBFS")}`;
     case "speech":
       return `Sua voz: ${formatDb(r.loudness_lufs, "LUFS")} (pico ${formatDb(r.peak_dbfs, "dBFS")})`;
     case "loud":
@@ -49,14 +58,16 @@ function stepSummary(r: StepResult): string {
 
 function gainSentence(g: number): string {
   const n = Math.abs(g).toFixed(1).replace(".", ",");
-  if (g > 1) return `Sua voz está ${n} dB abaixo do ideal. O Sonora vai subir o volume em ${n} dB.`;
-  if (g < -1) return `Sua voz está ${n} dB acima do ideal. O Sonora vai abaixar o volume em ${n} dB.`;
+  if (g > 1) return `Sua voz está ${n} dB abaixo do ideal.`;
+  if (g < -1) return `Sua voz está ${n} dB acima do ideal.`;
   return "Seu volume já está no ponto certo.";
 }
 
-/** Calibração smart: 3 testes curtos e uma recomendação em português claro. */
-export function Calibration({ ready, micType, recommendation, onRecommendation, onError }: Props) {
+/** Calibração smart: 3 testes curtos. O resultado é só uma sugestão. */
+export function Calibration({ ready, micType, windowsActive, onUse, onError }: Props) {
   const [results, setResults] = useState<Partial<Record<CalibrationStep, StepResult>>>({});
+  const [outcome, setOutcome] = useState<CalibrationOutcome | null>(null);
+  const [used, setUsed] = useState(false);
   const [running, setRunning] = useState<CalibrationStep | null>(null);
   const [runningSecs, setRunningSecs] = useState<number | null>(null);
   const left = useCountdown(runningSecs);
@@ -65,13 +76,12 @@ export function Calibration({ ready, micType, recommendation, onRecommendation, 
   async function run(step: CalibrationStep, secs: number) {
     setRunning(step);
     setRunningSecs(secs);
+    setUsed(false);
     try {
       const r = await api.calibrateStep(step, secs);
       const next = { ...results, [step]: r };
       setResults(next);
-      if (next.silence && next.speech) {
-        onRecommendation(await api.calibrationResult());
-      }
+      if (next.silence && next.speech) setOutcome(await api.calibrationResult());
     } catch (e) {
       onError(errorText(e));
     } finally {
@@ -80,21 +90,31 @@ export function Calibration({ ready, micType, recommendation, onRecommendation, 
     }
   }
 
-  function reset() {
-    setResults({});
-    onRecommendation(null);
+  function use() {
+    if (!outcome) return;
+    onUse(outcome);
+    setUsed(true);
   }
+
+  const rec = outcome?.recommendation;
+  const sug = outcome?.suggested_simple;
 
   return (
     <section className="card">
       <header className="card-head">
         <h2>Calibração smart</h2>
         <Help>
-          São três testes curtos. Com eles o Sonora descobre quanto volume falta, onde fica o
-          barulho do seu quarto e se a sua voz estoura. Refaça sempre que mudar de quarto, de
-          microfone ou de posição.
+          São três testes curtos. Com eles o Sonora descobre quanto volume falta, o barulho do seu
+          quarto e se a sua voz estoura. O resultado é só uma sugestão: você decide se usa, e pode
+          mudar tudo depois. Refaça quando mudar de quarto, de microfone ou de posição.
         </Help>
       </header>
+      {windowsActive && (
+        <p className="note">
+          Durante os testes o tratamento do Windows é desligado por alguns segundos, para medir o
+          microfone puro. Depois ele volta sozinho.
+        </p>
+      )}
 
       <ol className="steps">
         {STEPS.map((s, i) => {
@@ -122,14 +142,14 @@ export function Calibration({ ready, micType, recommendation, onRecommendation, 
         })}
       </ol>
 
-      {recommendation && (
+      {rec && sug && (
         <div className="recommendation">
-          <h3>Resultado</h3>
-          <p className="big">{gainSentence(recommendation.gain_db)}</p>
+          <h3>Sugestão do Sonora</h3>
+          <p className="big">{gainSentence(rec.gain_db)}</p>
 
-          {recommendation.warnings.length > 0 && (
+          {rec.warnings.length > 0 && (
             <ul className="warnings">
-              {recommendation.warnings.map((w) => (
+              {rec.warnings.map((w) => (
                 <li key={w}>{warningText(w, micType)}</li>
               ))}
             </ul>
@@ -137,31 +157,45 @@ export function Calibration({ ready, micType, recommendation, onRecommendation, 
 
           <dl className="numbers">
             <div>
-              <dt>
-                Ajuste de volume <Help>Quanto o Sonora sobe ou desce a sua voz para chegar em -18 LUFS, o volume ideal de conversa.</Help>
-              </dt>
-              <dd>{recommendation.gain_db > 0 ? "+" : ""}{formatDb(recommendation.gain_db, "dB")}</dd>
+              <dt>Volume</dt>
+              <dd>{formatSigned(rec.gain_db, "dB")}</dd>
+            </div>
+            <div>
+              <dt>Limpeza</dt>
+              <dd>{LEVELS[sug.cleanup]}</dd>
+            </div>
+            <div>
+              <dt>Uniformidade</dt>
+              <dd>{LEVELS[sug.evenness]}</dd>
             </div>
             <div>
               <dt>
-                Voz × barulho <Help>A distância entre a sua voz e o barulho de fundo. Acima de 30 dB é ótimo; abaixo de 25 dB o barulho aparece.</Help>
+                Porta de ruído{" "}
+                <Help>
+                  {rec.mic_mutes_itself
+                    ? "Seu microfone já fica mudo sozinho nas pausas, então a porta de ruído do Sonora não é necessária."
+                    : "Abaixo deste nível o microfone fica mudo, para ninguém ouvir ventilador ou teclado entre as suas frases."}
+                </Help>
               </dt>
-              <dd>{formatDb(recommendation.voice_to_noise_db, "dB")}</dd>
-            </div>
-            <div>
-              <dt>
-                Porta de ruído <Help>Abaixo deste nível o microfone fica mudo, para ninguém ouvir ventilador ou teclado entre as suas frases.</Help>
-              </dt>
-              <dd>{formatDb(recommendation.gate_threshold_dbfs, "dBFS")}</dd>
+              <dd>{rec.mic_mutes_itself ? "Não precisa" : formatDb(rec.gate_threshold_dbfs, "dBFS")}</dd>
             </div>
           </dl>
+          {rec.loud_peak_after_gain_dbfs !== null && rec.loud_peak_after_gain_dbfs > 0 && (
+            <p className="note">
+              Com esse volume, seus gritos passariam do máximo. Por isso a sugestão é Uniformidade
+              forte (compressor) e o limitador ligado: a fala normal sobe e os gritos ficam seguros.
+            </p>
+          )}
 
           <div className="row">
-            <button className="secondary" disabled={playing !== null} onClick={() => play(null)}>
+            <button onClick={use} disabled={used}>
+              {used ? "✓ Calibração em uso" : "Usar esta calibração"}
+            </button>
+            <button className="secondary" disabled={playing !== null} onClick={() => play("raw")}>
               {playing === "raw" ? "Tocando…" : "▶ Ouvir como estava"}
             </button>
-            <button disabled={playing !== null} onClick={() => play(recommendation.gain_db)}>
-              {playing === "processed" ? "Tocando…" : "▶ Ouvir com o ajuste do Sonora"}
+            <button className="secondary" disabled={playing !== null || !used} onClick={() => play("preview")}>
+              {playing === "preview" ? "Tocando…" : "▶ Ouvir com o Sonora"}
             </button>
             {playing && (
               <button className="secondary" onClick={stop}>
@@ -170,13 +204,9 @@ export function Calibration({ ready, micType, recommendation, onRecommendation, 
             )}
           </div>
           <p className="note">
-            Use fone de ouvido para comparar. Nesta versão o Sonora mostra o ajuste; na próxima, ele
-            aplica sozinho no Discord. Enquanto isso, você pode subir o volume do microfone no
-            Windows: Configurações › Sistema › Som › seu microfone › Volume de entrada.
+            "Usar esta calibração" troca os controles abaixo pela sugestão. Depois você pode mudar o que
+            quiser. Use fone de ouvido para comparar.
           </p>
-          <button className="link" onClick={reset}>
-            Recomeçar a calibração
-          </button>
         </div>
       )}
     </section>

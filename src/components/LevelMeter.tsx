@@ -6,7 +6,7 @@ const MIN = -60;
 const pct = (db: number) => Math.max(0, Math.min(100, ((db - MIN) / -MIN) * 100));
 
 /** Barra de nível com zonas coloridas, como um medidor de estúdio simplificado. */
-export function LevelMeter({ meter }: { meter: MeterSnapshot | null }) {
+export function LevelMeter({ meter, processed }: { meter: MeterSnapshot | null; processed: boolean }) {
   const peak = meter?.peak_dbfs ?? -100;
   const silent = peak < -50;
   const zone = meter?.zone ?? "low";
@@ -21,7 +21,9 @@ export function LevelMeter({ meter }: { meter: MeterSnapshot | null }) {
         <Help>
           A barra mostra o volume da sua voz agora. Fale normalmente: o ideal é ela ficar
           na faixa verde. Cinza é baixo demais, amarelo está no limite e vermelho estourou.
+          Com o tratamento do Windows ligado, ela mostra a voz já tratada, como os outros ouvem.
         </Help>
+        <span className="badge">{processed ? "com tratamento" : "sem tratamento"}</span>
       </header>
 
       <div className="meter" role="meter" aria-valuemin={MIN} aria-valuemax={0} aria-valuenow={Math.round(peak)}>

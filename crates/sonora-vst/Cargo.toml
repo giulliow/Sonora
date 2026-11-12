@@ -1,0 +1,14 @@
+[package]
+name = "sonora-vst"
+description = "Módulo VST2 do Sonora: roda dentro do Equalizer APO, no sistema de áudio do Windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "sonora_vst"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vst = "0.4"
+sonora-dsp = { path = "../sonora-dsp" }

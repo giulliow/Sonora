@@ -3,7 +3,7 @@ import { api, errorText } from "./api";
 
 /** Tocar a última gravação e saber quando terminou. */
 export function usePlayback(onError: (msg: string) => void) {
-  const [playing, setPlaying] = useState<"raw" | "processed" | null>(null);
+  const [playing, setPlaying] = useState<"raw" | "preview" | null>(null);
   const timer = useRef<number | null>(null);
 
   const clear = () => {
@@ -14,11 +14,11 @@ export function usePlayback(onError: (msg: string) => void) {
   useEffect(() => clear, []);
 
   const play = useCallback(
-    async (gainDb: number | null) => {
+    async (mode: "raw" | "preview") => {
       clear();
       try {
-        await api.playTake(gainDb);
-        setPlaying(gainDb === null ? "raw" : "processed");
+        await api.playTake(mode);
+        setPlaying(mode);
         timer.current = window.setInterval(async () => {
           if (!(await api.isPlaying())) {
             clear();

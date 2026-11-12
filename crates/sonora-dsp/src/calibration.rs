@@ -6,7 +6,7 @@
 
 use crate::level::{peak_dbfs, rms_dbfs};
 use crate::loudness::integrated_lufs;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Volume alvo de conversa. -18 LUFS soa "cheio" no Discord sem estourar.
 pub const TARGET_LUFS: f32 = -18.0;
@@ -14,6 +14,8 @@ pub const TARGET_LUFS: f32 = -18.0;
 pub const CEILING_DBFS: f32 = -1.0;
 /// Acima disso de ganho por software, o ruído de fundo sobe junto e fica feio.
 pub const MAX_COMFORTABLE_SOFTWARE_GAIN_DB: f32 = 20.0;
+/// Abaixo disso o "silêncio" é zero digital, não o ruído de um quarto real.
+pub const DIGITAL_SILENCE_DBFS: f32 = -90.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct SilenceReport {
@@ -84,7 +86,7 @@ pub fn analyze_loud(mono: &[f32]) -> LoudReport {
 }
 
 /// Avisos em linguagem de máquina. A tela transforma em frases simples.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Warning {
     /// Não ouvimos fala no teste de voz normal.
@@ -99,12 +101,19 @@ pub enum Warning {
     InputClipping,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Recommendation {
     /// Quanto subir (+) ou descer (-) o volume, em dB.
     pub gain_db: f32,
     /// A partir de que nível a porta de ruído abre (dBFS, antes do ganho).
-    pub gate_threshold_dbfs: f32,
+    /// `None` quando o microfone já entrega silêncio total nas pausas
+    /// (alguns, como o Shure MV7, têm porta de ruído própria).
+    pub gate_threshold_dbfs: Option<f32>,
+    /// O silêncio veio como "zero digital": o mic já corta o ruído sozinho.
+    pub mic_mutes_itself: bool,
+    /// Pico da voz alta depois do ajuste de volume (dBFS). Acima de 0
+    /// significa que só o limitador segura: vale usar o compressor.
+    pub loud_peak_after_gain_dbfs: Option<f32>,
     /// Distância entre voz e ruído de fundo, em dB. Acima de 30 é ótimo.
     pub voice_to_noise_db: Option<f32>,
     /// O limitador vai precisar trabalhar nos gritos (normal, só informativo).
@@ -119,11 +128,14 @@ pub fn recommend(
 ) -> Recommendation {
     let mut warnings = Vec::new();
     let noise = silence.noise_floor_dbfs;
+    let mic_mutes_itself = noise <= DIGITAL_SILENCE_DBFS;
 
     let Some(lufs) = speech.loudness_lufs.filter(|l| *l > -70.0) else {
         return Recommendation {
             gain_db: 0.0,
-            gate_threshold_dbfs: noise + 6.0,
+            gate_threshold_dbfs: (!mic_mutes_itself).then_some(noise + 6.0),
+            mic_mutes_itself,
+            loud_peak_after_gain_dbfs: None,
             voice_to_noise_db: None,
             limiter_will_engage: false,
             warnings: vec![Warning::NoSpeechDetected],
@@ -139,7 +151,7 @@ pub fn recommend(
     if gain_db > MAX_COMFORTABLE_SOFTWARE_GAIN_DB {
         warnings.push(Warning::NeedsMoreInputGain);
     }
-    if voice_to_noise < 25.0 {
+    if !mic_mutes_itself && voice_to_noise < 25.0 {
         warnings.push(Warning::NoisyRoom);
     }
 
@@ -152,10 +164,13 @@ pub fn recommend(
     // cortar o começo das palavras. Sempre pelo menos 6 dB acima do ruído.
     let gap = (voice_to_noise * 0.35).clamp(6.0, 18.0);
 
+    let round = |v: f32| (v * 10.0).round() / 10.0;
     Recommendation {
-        gain_db: (gain_db * 10.0).round() / 10.0,
-        gate_threshold_dbfs: ((noise + gap) * 10.0).round() / 10.0,
-        voice_to_noise_db: Some((voice_to_noise * 10.0).round() / 10.0),
+        gain_db: round(gain_db),
+        gate_threshold_dbfs: (!mic_mutes_itself).then(|| round(noise + gap)),
+        mic_mutes_itself,
+        loud_peak_after_gain_dbfs: loud.map(|l| round(l.peak_dbfs + gain_db)),
+        voice_to_noise_db: (!mic_mutes_itself).then(|| round(voice_to_noise)),
         limiter_will_engage: loud_peak + gain_db > CEILING_DBFS,
         warnings,
     }
@@ -191,7 +206,7 @@ mod tests {
         let r = recommend(&silence, &speech, None);
         assert!((r.gain_db - 12.0).abs() < 0.5, "{r:?}");
         assert!(r.warnings.is_empty(), "{r:?}");
-        assert!(r.gate_threshold_dbfs > silence.noise_floor_dbfs + 5.9);
+        assert!(r.gate_threshold_dbfs.unwrap() > silence.noise_floor_dbfs + 5.9);
     }
 
     #[test]
@@ -225,6 +240,26 @@ mod tests {
         let r = recommend(&silence, &speech, Some(&loud));
         assert!(r.warnings.contains(&Warning::InputClipping));
         assert!(r.limiter_will_engage);
+    }
+
+    #[test]
+    fn digital_silence_means_mic_mutes_itself() {
+        // Caso real do Shure MV7: pausa = zero digital.
+        let silence = analyze_silence(&vec![0.0; SR as usize * 2], SR);
+        let speech = SpeechReport {
+            loudness_lufs: Some(-36.8),
+            peak_dbfs: -20.0,
+        };
+        let loud = LoudReport {
+            peak_dbfs: -1.7,
+            clipped: false,
+        };
+        let r = recommend(&silence, &speech, Some(&loud));
+        assert!(r.mic_mutes_itself);
+        assert_eq!(r.gate_threshold_dbfs, None);
+        assert_eq!(r.voice_to_noise_db, None);
+        assert!(!r.warnings.contains(&Warning::NoisyRoom));
+        assert!((r.loud_peak_after_gain_dbfs.unwrap() - 17.1).abs() < 0.2);
     }
 
     #[test]

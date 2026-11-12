@@ -1,41 +1,60 @@
-import { useCallback, useEffect, useState } from "react";
-import { api, errorText, type InputDevice, type MeterSnapshot, type MicType, type Recommendation } from "./api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  api,
+  errorText,
+  type AppView,
+  type CalibrationOutcome,
+  type InputDevice,
+  type MeterSnapshot,
+  type MicType,
+  type Settings,
+} from "./api";
 import { Calibration } from "./components/Calibration";
+import { Controls } from "./components/Controls";
 import { Glossary } from "./components/Glossary";
 import { LevelMeter } from "./components/LevelMeter";
 import { MicPicker } from "./components/MicPicker";
 import { Recorder } from "./components/Recorder";
+import { WindowsSetup } from "./components/WindowsSetup";
 
-const micTypeKey = (name: string) => `sonora.micType.${name}`;
-
-function loadMicType(device: InputDevice | undefined): MicType | null {
-  if (!device) return null;
-  try {
-    const saved = localStorage.getItem(micTypeKey(device.name)) as MicType | null;
-    if (saved) return saved;
-  } catch {
-    /* armazenamento indisponível: segue com o palpite */
-  }
-  return device.guess?.mic_type ?? null;
-}
+const SAVE_DELAY_MS = 300;
 
 export default function App() {
+  const [view, setView] = useState<AppView | null>(null);
   const [devices, setDevices] = useState<InputDevice[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [meter, setMeter] = useState<MeterSnapshot | null>(null);
-  const [micType, setMicType] = useState<MicType | null>(null);
-  const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const saveTimer = useRef<number | null>(null);
+  const pending = useRef<Settings | null>(null);
 
   const showError = useCallback((msg: string) => setError(msg), []);
 
-  const open = useCallback(async (name: string, list: InputDevice[]) => {
+  /** Muda as configurações na tela na hora e salva (aplicando no Windows) logo em seguida. */
+  const change = useCallback((patch: Partial<Settings>) => {
+    setView((v) => {
+      if (!v) return v;
+      const settings = { ...v.settings, ...patch };
+      pending.current = settings;
+      if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(async () => {
+        const s = pending.current;
+        if (!s) return;
+        try {
+          const next = await api.saveSettings(s);
+          // Só aceita a resposta se nada mudou enquanto salvava.
+          if (pending.current === s) setView(next);
+        } catch (e) {
+          setError(errorText(e));
+        }
+      }, SAVE_DELAY_MS);
+      return { ...v, settings };
+    });
+  }, []);
+
+  const openDevice = useCallback(async (name: string) => {
     setReady(false);
     setError(null);
-    setRecommendation(null);
-    setSelected(name);
-    setMicType(loadMicType(list.find((d) => d.name === name)));
     try {
       await api.startInput(name);
       setReady(true);
@@ -44,17 +63,41 @@ export default function App() {
     }
   }, []);
 
+  const selectDevice = useCallback(
+    (name: string, list: InputDevice[], current: Settings) => {
+      const device = list.find((d) => d.name === name);
+      const sameDevice = current.device_name === name;
+      change({
+        device_name: name,
+        mic_type: sameDevice ? (current.mic_type ?? device?.guess?.mic_type ?? null) : (device?.guess?.mic_type ?? null),
+        // Calibração é de um microfone específico.
+        ...(sameDevice ? {} : { recommendation: null }),
+      });
+      openDevice(name);
+    },
+    [change, openDevice],
+  );
+
   const refresh = useCallback(async () => {
     try {
-      const list = await api.listInputs();
+      const [v, list] = await Promise.all([api.getState(), api.listInputs()]);
+      setView(v);
       setDevices(list);
-      const keep = list.find((d) => d.name === selected) ?? list.find((d) => d.is_default) ?? list[0];
-      if (keep) await open(keep.name, list);
-      else setError("Nenhum microfone encontrado. Conecte o microfone e clique em \"Procurar de novo\".");
+      const keep =
+        list.find((d) => d.name === v.settings.device_name) ?? list.find((d) => d.is_default) ?? list[0];
+      if (!keep) {
+        setError('Nenhum microfone encontrado. Conecte o microfone e clique em "Procurar de novo".');
+        return;
+      }
+      if (keep.name !== v.settings.device_name || v.settings.mic_type === null) {
+        selectDevice(keep.name, list, v.settings);
+      } else {
+        openDevice(keep.name);
+      }
     } catch (e) {
       setError(errorText(e));
     }
-  }, [open, selected]);
+  }, [openDevice, selectDevice]);
 
   useEffect(() => {
     const unlisten = api.onMeter(setMeter);
@@ -65,16 +108,23 @@ export default function App() {
     // Só na abertura do app.
   }, []);
 
-  function chooseMicType(t: MicType) {
-    setMicType(t);
-    if (selected) {
-      try {
-        localStorage.setItem(micTypeKey(selected), t);
-      } catch {
-        /* sem problema: só não lembra na próxima vez */
-      }
-    }
+  function applyCalibration(o: CalibrationOutcome) {
+    change({ recommendation: o.recommendation, use_calibration: true, simple: o.suggested_simple, mode: "simple" });
   }
+
+  if (!view) {
+    return (
+      <main>
+        <header className="app-head">
+          <h1>Sonora</h1>
+          <p>Carregando…</p>
+        </header>
+        {error && <div className="error" role="alert"><p>{error}</p></div>}
+      </main>
+    );
+  }
+
+  const windowsActive = view.eqapo.linked && view.eqapo.processing_on;
 
   return (
     <main>
@@ -87,8 +137,8 @@ export default function App() {
         <div className="error" role="alert">
           <p>{error}</p>
           <p className="note">
-            Se o Windows estiver bloqueando: Configurações › Privacidade e segurança › Microfone ›
-            ligue "Permitir que aplicativos da área de trabalho acessem o microfone".
+            Se o Windows estiver bloqueando o microfone: Configurações › Privacidade e segurança ›
+            Microfone › ligue "Permitir que aplicativos da área de trabalho acessem o microfone".
           </p>
           <button className="link" onClick={() => setError(null)}>
             Fechar
@@ -98,21 +148,30 @@ export default function App() {
 
       <MicPicker
         devices={devices}
-        selected={selected}
-        onSelect={(n) => open(n, devices)}
+        selected={view.settings.device_name}
+        onSelect={(n) => selectDevice(n, devices, view.settings)}
         onRefresh={refresh}
-        micType={micType}
-        onMicType={chooseMicType}
+        micType={view.settings.mic_type}
+        onMicType={(t: MicType) => change({ mic_type: t })}
       />
-      <LevelMeter meter={ready ? meter : null} />
-      <Calibration
-        ready={ready}
-        micType={micType}
-        recommendation={recommendation}
-        onRecommendation={setRecommendation}
+      <WindowsSetup
+        view={view}
+        deviceName={view.settings.device_name}
+        onView={setView}
+        onChange={change}
+        onRefresh={refresh}
         onError={showError}
       />
-      <Recorder ready={ready} gainDb={recommendation?.gain_db ?? null} onError={showError} />
+      <LevelMeter meter={ready ? meter : null} processed={windowsActive} />
+      <Calibration
+        ready={ready}
+        micType={view.settings.mic_type}
+        windowsActive={windowsActive}
+        onUse={applyCalibration}
+        onError={showError}
+      />
+      <Controls view={view} onChange={change} />
+      <Recorder ready={ready} onError={showError} />
       <Glossary />
     </main>
   );

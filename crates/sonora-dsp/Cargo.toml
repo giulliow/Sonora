@@ -7,4 +7,5 @@ license.workspace = true
 
 [dependencies]
 ebur128 = "0.1"
+nnnoiseless = { version = "0.5", default-features = false }
 serde = { version = "1", features = ["derive"] }

@@ -8,19 +8,12 @@ import { Help } from "./Help";
 const SECS = 10;
 
 /** Gravar e ouvir de volta: o "retorno real" de como você soa. */
-export function Recorder({
-  ready,
-  gainDb,
-  onError,
-}: {
-  ready: boolean;
-  gainDb: number | null;
-  onError: (msg: string) => void;
-}) {
+export function Recorder({ ready, onError }: { ready: boolean; onError: (msg: string) => void }) {
   const [recording, setRecording] = useState(false);
   const [take, setTake] = useState<TakeSummary | null>(null);
   const left = useCountdown(recording ? SECS : null);
   const { playing, play, stop } = usePlayback(onError);
+  const busy = recording || playing !== null;
 
   async function record() {
     setRecording(true);
@@ -38,20 +31,21 @@ export function Recorder({
       <header className="card-head">
         <h2>Gravar e ouvir</h2>
         <Help>
-          Grave {SECS} segundos falando normalmente e ouça de volta no fone. É exatamente o que
-          seus amigos recebem. Depois da calibração, dá para comparar com o ajuste do Sonora.
+          Grave {SECS} segundos falando normalmente e ouça de volta no fone. Com o tratamento do
+          Windows ligado, a gravação já sai exatamente como seus amigos recebem. Sem ele, dá para
+          ouvir uma prévia de como vai ficar.
         </Help>
       </header>
       <div className="row">
-        <button disabled={!ready || recording || playing !== null} onClick={record}>
+        <button disabled={!ready || busy} onClick={record}>
           {recording ? `● Gravando… ${Math.ceil(left)} s` : take ? "● Gravar de novo" : `● Gravar ${SECS} s`}
         </button>
-        <button className="secondary" disabled={!take || recording || playing !== null} onClick={() => play(null)}>
+        <button className="secondary" disabled={!take || busy} onClick={() => play("raw")}>
           {playing === "raw" ? "Tocando…" : "▶ Ouvir"}
         </button>
-        {gainDb !== null && (
-          <button className="secondary" disabled={!take || recording || playing !== null} onClick={() => play(gainDb)}>
-            {playing === "processed" ? "Tocando…" : "▶ Ouvir com ajuste"}
+        {take && !take.processed_by_windows && (
+          <button className="secondary" disabled={busy} onClick={() => play("preview")}>
+            {playing === "preview" ? "Tocando…" : "▶ Ouvir com o Sonora (prévia)"}
           </button>
         )}
         {playing && (
@@ -62,8 +56,8 @@ export function Recorder({
       </div>
       {take && (
         <p className="step-result">
-          Gravação de {take.seconds.toFixed(0)} s: volume {formatDb(take.loudness_lufs, "LUFS")}, pico{" "}
-          {formatDb(take.peak_dbfs, "dBFS")}.
+          {take.processed_by_windows ? "Gravado com o tratamento do Windows. " : "Gravado sem tratamento. "}
+          Volume {formatDb(take.loudness_lufs, "LUFS")}, pico {formatDb(take.peak_dbfs, "dBFS")}.
         </p>
       )}
     </section>

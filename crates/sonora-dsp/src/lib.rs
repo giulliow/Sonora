@@ -4,10 +4,15 @@
 //! (`f32`, mono, entre -1.0 e 1.0) e devolve números e sugestões. Assim dá
 //! para testar tudo sem microfone.
 
+pub mod biquad;
 pub mod calibration;
+pub mod chain;
+pub mod denoise;
+pub mod dynamics;
 pub mod level;
 pub mod loudness;
 pub mod mic;
+pub mod presets;
 pub mod process;
 pub mod resample;
 
